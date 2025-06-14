@@ -216,6 +216,68 @@ const selectOption = defineTool({
   },
 });
 
+/**
+ * Fill ツール：Playwright の page.fill() を使って入力フィールドに文字列を一括入力
+ */
+const browserFillSchema = elementSchema.extend({
+  value: z.string().describe('入力する文字列'),
+});
+
+const browserFill = defineTool({
+  capability: 'core',
+  schema: {
+    name: 'browser_fill',
+    title: 'Fill',
+    description: '指定した要素に文字列を一括で入力します',
+    inputSchema: browserFillSchema,
+    type: 'destructive',
+  },
+  handle: async (context, params) => {
+    const snapshot = context.currentTabOrDie().snapshotOrDie();
+    const locator = snapshot.refLocator(params.ref);
+    const code = [
+      `// Fill "${params.value}" into ${params.element}`,
+      `await page.${await generateLocator(locator)}.fill(${javascript.formatObject(params.value)});`
+    ];
+    return {
+      code,
+      action: () => locator.fill(params.value).then(() => {}),
+      captureSnapshot: true,
+      waitForNetwork: true,
+    };
+  },
+});
+
+/**
+ * Check ツール：Playwright の page.check() を使ってチェックボックス／ラジオを確実にチェック
+ */
+const browserCheckSchema = elementSchema;
+
+const browserCheck = defineTool({
+  capability: 'core',
+  schema: {
+    name: 'browser_check',
+    title: 'Check',
+    description: '指定したチェックボックスまたはラジオボタンをチェックします',
+    inputSchema: browserCheckSchema,
+    type: 'destructive',
+  },
+  handle: async (context, params) => {
+    const snapshot = context.currentTabOrDie().snapshotOrDie();
+    const locator = snapshot.refLocator(params.ref);
+    const code = [
+      `// Check ${params.element}`,
+      `await page.${await generateLocator(locator)}.check();`
+    ];
+    return {
+      code,
+      action: () => locator.check().then(() => {}),
+      captureSnapshot: true,
+      waitForNetwork: true,
+    };
+  },
+});
+
 export default [
   snapshot,
   click,
@@ -223,4 +285,6 @@ export default [
   hover,
   type,
   selectOption,
+  browserFill,
+  browserCheck,
 ];
