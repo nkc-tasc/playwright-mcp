@@ -278,6 +278,18 @@ const browserCheck = defineTool({
   },
 });
 
+// browser_type は browserFill の後方互換 alias
+/** @deprecated Remove in July 2025 - use browser_fill instead */
+const browserType = {
+  ...browserFill,
+  schema: {
+    ...browserFill.schema,
+    name: 'browser_type',
+    title: 'Type text (deprecated - use browser_fill)',
+    description: 'DEPRECATED: Use browser_fill instead. Type text into element',
+  }
+};
+
 export default [
   snapshot,
   click,
@@ -287,4 +299,5 @@ export default [
   selectOption,
   browserFill,
   browserCheck,
+  browserType, // 🔄 後方互換 alias
 ];

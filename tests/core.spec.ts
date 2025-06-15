@@ -237,3 +237,84 @@ await page.setViewportSize({ width: 390, height: 780 });
 \`\`\``);
   await expect.poll(() => client.callTool({ name: 'browser_snapshot' })).toContainTextContent('Window size: 390x780');
 });
+
+test('browser_fill', async ({ client, server }) => {
+  server.setContent('/', `
+    <title>Fill Test</title>
+    <input type="text" placeholder="Enter text here">
+    <textarea placeholder="Enter text area content"></textarea>
+  `, 'text/html');
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+
+  expect(await client.callTool({
+    name: 'browser_fill',
+    arguments: {
+      element: 'text input field',
+      ref: 'e2',
+      value: 'Hello World!',
+    },
+  })).toHaveTextContent(`
+- Ran Playwright code:
+\`\`\`js
+// Fill "Hello World!" into text input field
+await page.getByRole('textbox', { name: 'Enter text here' }).fill('Hello World!');
+\`\`\`
+
+- Page URL: ${server.PREFIX}
+- Page Title: Fill Test
+- Page Snapshot
+\`\`\`yaml
+- generic [ref=e1]:
+  - textbox "Enter text here" [ref=e2]: Hello World!
+  - textbox "Enter text area content" [ref=e3]
+\`\`\`
+`);
+});
+
+test('browser_check', async ({ client, server }) => {
+  server.setContent('/', `
+    <title>Check Test</title>
+    <input type="checkbox" name="option1" value="1" id="option1">
+    <label for="option1">Option 1</label>
+    <input type="radio" name="choice" value="a" id="choiceA">
+    <label for="choiceA">Choice A</label>
+    <input type="radio" name="choice" value="b" id="choiceB">
+    <label for="choiceB">Choice B</label>
+  `, 'text/html');
+
+  await client.callTool({
+    name: 'browser_navigate',
+    arguments: { url: server.PREFIX },
+  });
+
+  expect(await client.callTool({
+    name: 'browser_check',
+    arguments: {
+      element: 'Option 1 checkbox',
+      ref: 'e2',
+    },
+  })).toHaveTextContent(`
+- Ran Playwright code:
+\`\`\`js
+// Check Option 1 checkbox
+await page.getByRole('checkbox', { name: 'Option' }).check();
+\`\`\`
+
+- Page URL: ${server.PREFIX}
+- Page Title: Check Test
+- Page Snapshot
+\`\`\`yaml
+- generic [ref=e1]:
+  - checkbox "Option 1" [checked] [ref=e2]
+  - generic [ref=e3]: Option 1
+  - radio "Choice A" [ref=e4]
+  - generic [ref=e5]: Choice A
+  - radio "Choice B" [ref=e6]
+  - generic [ref=e7]: Choice B
+\`\`\`
+`);
+});
