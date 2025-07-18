@@ -34,7 +34,7 @@ import mouse from './tools/mouse.js';
 import type { Tool } from './tools/tool.js';
 
 export const allTools: Tool<any>[] = [
-  ...attributes(true),
+  ...attributes,
   ...common,
   ...console,
   ...dialogs,

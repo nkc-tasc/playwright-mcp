@@ -3,9 +3,9 @@
  */
 
 import { z } from 'zod';
-import { defineTool, type ToolFactory } from './tool.js';
+import { defineTool } from './tool.js';
 
-const getElementAttributes: ToolFactory = captureSnapshot => defineTool({
+const getElementAttributes = defineTool({
   capability: 'core',
   schema: {
     name: 'browser_get_element_attributes',
@@ -120,7 +120,7 @@ const getElementAttributes: ToolFactory = captureSnapshot => defineTool({
   },
 });
 
-const getBulkAttributes: ToolFactory = captureSnapshot => defineTool({
+const getBulkAttributes = defineTool({
   capability: 'core',
   schema: {
     name: 'browser_get_bulk_attributes',
@@ -215,7 +215,7 @@ const getBulkAttributes: ToolFactory = captureSnapshot => defineTool({
   },
 });
 
-export default (captureSnapshot: boolean) => [
-  getElementAttributes(captureSnapshot),
-  getBulkAttributes(captureSnapshot)
+export default [
+  getElementAttributes,
+  getBulkAttributes
 ];
