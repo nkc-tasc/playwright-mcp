@@ -1,0 +1,66 @@
+FROM node:22-bookworm-slim
+
+# 作業ディレクトリ設定
+WORKDIR /app
+
+# 必要なシステムパッケージをインストール（汎用的ヘッドレスブラウザ対応）
+RUN apt-get update && apt-get install -y \
+    xvfb \
+    x11-utils \
+    libgbm1 \
+    libnss3 \
+    libatk-bridge2.0-0 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxss1 \
+    libgtk-3-0 \
+    libasound2 \
+    dbus \
+    dbus-x11 \
+    libxcb1 \
+    libxcb-dri3-0 \
+    libxcb-present0 \
+    libx11-xcb1 \
+    libxrandr2 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    mesa-utils \
+    libegl1-mesa \
+    libgl1-mesa-glx \
+    libgles2-mesa \
+    && rm -rf /var/lib/apt/lists/*
+
+# アプリケーションファイルをコピー
+COPY package*.json ./
+COPY *.js *.ts ./
+COPY src src/
+COPY lib lib/
+COPY cli.js ./
+COPY mcp-config.json ./
+
+# NPM依存関係をインストール
+RUN npm ci --omit=dev
+
+# Playwrightの依存関係をインストール
+RUN npx -y playwright-core install-deps chromium
+RUN npx -y playwright-core install --no-shell chromium
+
+# スタートアップスクリプトをコピー
+COPY start-with-xvfb.sh ./
+RUN chmod +x start-with-xvfb.sh
+
+# ユーザー権限設定
+RUN chown -R node:node /app
+USER node
+
+# 環境変数設定
+ENV NODE_ENV=production
+ENV DISPLAY=:99
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+# ポート公開
+EXPOSE 17777
+
+# 起動コマンド
+ENTRYPOINT ["./start-with-xvfb.sh", "node", "cli.js", "--headless", "--browser", "chromium", "--no-sandbox", "--host", "0.0.0.0", "--port", "17777"]

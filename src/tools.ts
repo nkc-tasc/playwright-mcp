@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import attributes from './tools/attributes.js';
 import common from './tools/common.js';
 import console from './tools/console.js';
 import dialogs from './tools/dialogs.js';
@@ -33,6 +34,7 @@ import mouse from './tools/mouse.js';
 import type { Tool } from './tools/tool.js';
 
 export const allTools: Tool<any>[] = [
+  ...attributes(true),
   ...common,
   ...console,
   ...dialogs,
