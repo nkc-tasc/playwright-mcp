@@ -19,6 +19,7 @@ import common from './tools/common.js';
 import console from './tools/console.js';
 import dialogs from './tools/dialogs.js';
 import evaluate from './tools/evaluate.js';
+import expect from './tools/expect.js';
 import files from './tools/files.js';
 import install from './tools/install.js';
 import keyboard from './tools/keyboard.js';
@@ -30,6 +31,7 @@ import tabs from './tools/tabs.js';
 import screenshot from './tools/screenshot.js';
 import wait from './tools/wait.js';
 import mouse from './tools/mouse.js';
+import detectPageChange from './tools/detectPageChange.js';
 
 import type { Tool } from './tools/tool.js';
 
@@ -39,6 +41,7 @@ export const allTools: Tool<any>[] = [
   ...console,
   ...dialogs,
   ...evaluate,
+  ...expect,
   ...files,
   ...install,
   ...keyboard,
@@ -50,4 +53,5 @@ export const allTools: Tool<any>[] = [
   ...snapshot,
   ...tabs,
   ...wait,
+  ...detectPageChange,
 ];

@@ -2,7 +2,6 @@
   "browser": {
     "browserName": "chromium",
     "isolated": true,
-    "userDataDir": "/tmp/playwright-mcp-profile",
     "launchOptions": {
       "headless": true,
       "args": [
@@ -14,14 +13,17 @@
         "--disable-web-security",
         "--disable-features=TranslateUI",
         "--disable-ipc-flooding-protection",
-        "--no-zygote",
-        "--single-process",
         "--disable-extensions",
         "--disable-default-apps"
       ]
     },
     "contextOptions": {
       "viewport": { "width": 1920, "height": 1080 }
+    },
+    "waitOptions": {
+      "networkIdle": 2000,
+      "loadState": "networkidle",
+      "timeout": 30000
     }
   }
 }

@@ -179,6 +179,7 @@ const selectOption = defineTool({
   },
 });
 
+
 export default [
   snapshot,
   click,
