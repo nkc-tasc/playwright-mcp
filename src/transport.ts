@@ -115,6 +115,13 @@ export function startHttpTransport(httpServer: http.Server, mcpServer: Server) {
   const streamableSessions = new Map<string, StreamableHTTPServerTransport>();
   httpServer.on('request', async (req, res) => {
     const url = new URL(`http://localhost${req.url}`);
+    // Lightweight health endpoint for container health checks
+    if (url.pathname === '/health') {
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ status: 'ok', service: 'playwright-mcp', timestamp: new Date().toISOString() }));
+      return;
+    }
     if (url.pathname.startsWith('/mcp'))
       await handleStreamable(mcpServer, req, res, streamableSessions);
     else

@@ -31,11 +31,30 @@ const snapshot = defineTool({
   },
 
   handle: async context => {
+    // Ensure page exists
     await context.ensureTab();
 
+    // Capture a fresh snapshot for internal state/locators
+    const tab = context.currentTabOrDie();
+    await tab.captureSnapshot();
+
+    // Collect minimal, structured page state for clients to parse easily
+    const payload = await tab.page.evaluate(() => ({
+      html: document.documentElement?.outerHTML || '',
+      url: location.href,
+      title: document.title || ''
+    }));
+
     return {
-      code: [`// <internal code to capture accessibility snapshot>`],
-      captureSnapshot: true,
+      code: [
+        `// Structured page snapshot collected (html length: ${String(payload.html?.length || 0)})`,
+      ],
+      // Provide structured JSON result directly to the client
+      resultOverride: {
+        content: [{ type: 'text', text: JSON.stringify(payload) }],
+      },
+      // Avoid duplicating large YAML snapshot in the response body
+      captureSnapshot: false,
       waitForNetwork: false,
     };
   },

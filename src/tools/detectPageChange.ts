@@ -28,8 +28,12 @@ type PageState = {
   headingCount: number;
 };
 
+// Enhanced transition state management for hysteresis/cooldown
+type TransitionMeta = { lastTime: number; active: boolean };
+
 // Tab-based session state storage using WeakMap for proper context isolation
 const sessionStates = new WeakMap<any, PageState>();
+const transitionMetaStates = new WeakMap<any, TransitionMeta>();
 
 // Utility functions for numerical feature-based change detection
 
@@ -181,7 +185,7 @@ const DEFAULT_WEIGHTS = {
 };
 
 const detectPageChangeSchema = z.object({
-  threshold: z.number().optional().default(0.30).describe('Threshold for significant change detection (0.0-1.0)'),
+  threshold: z.number().optional().default(0.20).describe('Threshold for significant change detection (0.0-1.0)'),
   weights: z.object({
     url: z.number().optional().describe('Weight for URL changes'),
     title: z.number().optional().describe('Weight for title changes'),
@@ -191,6 +195,10 @@ const detectPageChangeSchema = z.object({
     linkElements: z.number().optional().describe('Weight for link element changes'),
   }).optional().describe('Weights for different change types'),
   seed: z.boolean().optional().default(false).describe('Initialize state without detection (returns false)'),
+  // Hysteresis/cooldown parameters for false positive suppression
+  risingThreshold: z.number().optional().default(0.25).describe('Rising threshold for hysteresis (transition detection)'),
+  fallingThreshold: z.number().optional().default(0.15).describe('Falling threshold for hysteresis (transition end)'),
+  minTimeBetweenTransitionsMs: z.number().optional().default(1500).describe('Cooldown time between transitions in milliseconds'),
 });
 
 const detectPageChange = defineTool({
@@ -256,8 +264,31 @@ const detectPageChange = defineTool({
     const weights = { ...DEFAULT_WEIGHTS, ...params.weights };
     const score = calculateWeightedScore(changeComponents, weights);
 
-    // Determine change significance
-    const significant_change = score >= params.threshold;
+    // Hysteresis/Cooldown stabilization to suppress false positives
+    const RISING_THRESHOLD = params.risingThreshold ?? 0.25;   // Rising threshold (transition detection)
+    const FALLING_THRESHOLD = params.fallingThreshold ?? 0.15; // Falling threshold (transition end)
+    const COOLDOWN_MS = params.minTimeBetweenTransitionsMs ?? 1500; // Cooldown time
+
+    const now = Date.now();
+    const meta = transitionMetaStates.get(tab) ?? { lastTime: 0, active: false };
+    const coolingDown = (now - meta.lastTime) < COOLDOWN_MS;
+
+    // Hysteresis judgment
+    let active = meta.active;
+    if (!active && score >= RISING_THRESHOLD) active = true;
+    else if (active && score < FALLING_THRESHOLD) active = false;
+
+    // Final judgment (considering cooldown)
+    const final_transition_detected = active && !coolingDown;
+
+    // Meta state update
+    transitionMetaStates.set(tab, {
+      lastTime: final_transition_detected ? now : meta.lastTime,
+      active
+    });
+
+    // Use hysteresis result for significant_change
+    const significant_change = final_transition_detected;
     const change_type = determineChangeType(changeComponents);
 
     // Debug logging for normal detection
@@ -268,11 +299,36 @@ const detectPageChange = defineTool({
     // Update session state
     sessionStates.set(tab, current);
 
+    // Calculate additional change flags
+    const url_changed = previous ? (previous.url !== current.url) : true;
+    const title_changed = previous ? (previous.title !== current.title) : true;
+    
+    // Calculate DOM diff summary from element count changes
+    const elemCountDiff = previous ? (current.elemCount - previous.elemCount) : current.elemCount;
+    const dom_diff_summary = {
+      added: Math.max(0, elemCountDiff),
+      removed: Math.max(0, -elemCountDiff), 
+      changed: Math.abs(elemCountDiff)
+    };
+    
+    // Determine transition cause
+    const transition_cause = url_changed ? 'url' :
+                           title_changed ? 'title' :
+                           score > 0.3 ? 'dom' : 'mixed';
+
     // Prepare result data
     const result = {
       significant_change,
       score,
       change_type,
+      // Added debug information enhancement
+      transition_detected: significant_change,    // Explicit flag
+      new_url: current.url,                      // Target URL
+      url_changed,                               // URL change flag
+      title_changed,                             // Title change flag
+      dom_diff_summary,                          // DOM change details
+      transition_cause,                          // Transition cause identification
+      // Existing parts
       components: changeComponents,
       current: {
         url: current.url,
