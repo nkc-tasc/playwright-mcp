@@ -32,6 +32,8 @@ export function createConnection(config: FullConfig, browserContextFactory: Brow
   const server = new McpServer({ name: 'Playwright', version: packageJSON.version }, {
     capabilities: {
       tools: {},
+      // Phase 1.5: Advertise that snapshots now include url/title at root level
+      snapshotIncludesUrlTitle: true,
     }
   });
 

@@ -17,7 +17,7 @@
 import { z } from 'zod';
 
 import { defineTool } from './tool.js';
-import { elementSchema } from './snapshot.js';
+import { elementSchema, baseElementSchema } from './snapshot.js';
 import { generateLocator } from './utils.js';
 import * as javascript from '../javascript.js';
 
@@ -53,10 +53,16 @@ const pressKey = defineTool({
   },
 });
 
-const typeSchema = elementSchema.extend({
+const typeSchema = baseElementSchema.extend({
   text: z.string().describe('Text to type into the element'),
   submit: z.boolean().optional().describe('Whether to submit entered text (press Enter after)'),
   slowly: z.boolean().optional().describe('Whether to type one character at a time. Useful for triggering key handlers in the page. By default entire text is filled in at once.'),
+}).refine(data => {
+  const hasRef = data.ref && typeof data.ref === 'string' && data.ref.trim().length > 0;
+  const hasSelector = data.selector && typeof data.selector === 'string' && data.selector.trim().length > 0;
+  return hasRef || hasSelector;
+}, {
+  message: "Either 'ref' or 'selector' must be provided as non-empty string",
 });
 
 const type = defineTool({
@@ -70,8 +76,14 @@ const type = defineTool({
   },
 
   handle: async (context, params) => {
-    const snapshot = context.currentTabOrDie().snapshotOrDie();
-    const locator = snapshot.refLocator(params);
+    const tab = context.currentTabOrDie();
+
+    // Support both ref-based and selector-based element targeting
+    const locator = params.selector
+      ? tab.page.locator(params.selector)
+      : params.ref
+        ? tab.snapshotOrDie().refLocator({ ref: params.ref, element: params.element })
+        : tab.page.locator(`[data-ref="${params.element}"]`); // fallback
 
     const code: string[] = [];
     const steps: (() => Promise<void>)[] = [];

@@ -132,10 +132,9 @@ export class Context {
   async run(tool: Tool, params: Record<string, unknown> | undefined) {
     // Tab management is done outside of the action() call.
     const toolResult = await tool.handle(this, tool.schema.inputSchema.parse(params || {}));
-    const { code, action, waitForNetwork, captureSnapshot, resultOverride } = toolResult;
-
-    if (resultOverride)
-      return resultOverride;
+    const { code = [], action, waitForNetwork, captureSnapshot } = toolResult;
+    const contentFromTool = toolResult.content || [];
+    const data = toolResult.data;
 
     if (!this._currentTab) {
       return {
@@ -168,12 +167,6 @@ ${code.join('\n')}
 
     if (this.modalStates().length) {
       result.push('', ...this.modalStatesMarkdown());
-      return {
-        content: [{
-          type: 'text',
-          text: result.join('\n'),
-        }],
-      };
     }
 
     const messages = tab.takeRecentConsoleMessages();
@@ -209,16 +202,18 @@ ${code.join('\n')}
       result.push(tab.snapshotOrDie().text());
     }
 
-    const content = actionResult?.content ?? [];
+    const actionContent = actionResult?.content ?? [];
+
+    // Build final content: code block + tool-provided content + action content
+    const finalContent = [
+      { type: 'text', text: result.join('\n') },
+      ...contentFromTool,
+      ...actionContent,
+    ];
 
     return {
-      content: [
-        ...content,
-        {
-          type: 'text',
-          text: result.join('\n'),
-        }
-      ],
+      content: finalContent,
+      ...(data !== undefined && { data }),
     };
   }
 

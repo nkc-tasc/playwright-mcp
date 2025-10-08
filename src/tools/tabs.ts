@@ -34,12 +34,7 @@ const listTabs = defineTool({
       code: [`// <internal code to list tabs>`],
       captureSnapshot: false,
       waitForNetwork: false,
-      resultOverride: {
-        content: [{
-          type: 'text',
-          text: await context.listTabsMarkdown(),
-        }],
-      },
+      content: [{ type: 'text', text: await context.listTabsMarkdown() }],
     };
   },
 });

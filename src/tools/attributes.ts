@@ -1,118 +1,145 @@
 /**
  * HTML属性取得ツール - .nth()禁止違反解決のための汎用機能
+ * Structured Payload形式でレスポンスを統一
  */
 
 import { z } from 'zod';
 import { defineTool } from './tool.js';
+import { buildPayload } from './utils/structuredPayload.js';
 
 const getElementAttributes = defineTool({
   capability: 'core',
   schema: {
     name: 'browser_get_element_attributes',
-    title: 'Get HTML attributes of an element',
-    description: 'Extract actual HTML attributes (id, name, type, class, etc.) from a specific element by ref ID',
+    title: 'Get element attributes',
+    description: 'Extract element attributes using selector or ref',
     inputSchema: z.object({
-      ref: z.string().describe('Element reference ID (e.g., "e15")'),
-      description: z.string().optional().describe('Human-readable description of the element')
+      selector: z.string().optional().describe('CSS selector for backward compatibility'),
+      ref: z.string().optional().describe('Element reference ID (e.g., "e15") - preferred method'),
+      element: z.string().default('target-element').describe('Element description')
     }),
     type: 'readOnly',
   },
 
   handle: async (context, params) => {
+    console.log('[DEBUG] browser_get_element_attributes started', params);
     const tab = context.currentTabOrDie();
-    
+
     try {
-      // JavaScript実行でHTML属性を取得
-      const attributes = await tab.page.evaluate((refId) => {
-        // refIDから要素を特定するロジック
-        // 通常はdata-ref属性やアクセシビリティツリーから要素を見つける
-        const elements = Array.from(document.querySelectorAll('*'));
-        
-        // アクセシビリティツリーから要素を特定
-        let targetElement = null;
-        
-        // 複数の方法で要素を特定
-        for (const element of elements) {
-          // data-ref属性での検索
-          if (element.getAttribute('data-ref') === refId) {
-            targetElement = element;
-            break;
-          }
-          
-          // aria-describedby属性での検索  
-          if (element.getAttribute('aria-describedby') === refId) {
-            targetElement = element;
-            break;
-          }
-        }
-        
-        // フォールバック: DOM順序での特定（refIDの数値部分を使用）
-        if (!targetElement) {
-          const refNum = parseInt(refId.replace(/[^0-9]/g, ''), 10);
-          if (!isNaN(refNum) && refNum >= 0 && refNum < elements.length) {
-            targetElement = elements[refNum];
-          }
-        }
-        
-        if (!targetElement) {
-          return { error: `Element with ref ${refId} not found` };
-        }
-        
-        // HTML属性を全て取得
-        const attrs: Record<string, string> = {};
-        
-        // 標準的な属性
-        const standardAttrs = [
-          'id', 'name', 'type', 'class', 'placeholder', 'value',
-          'href', 'src', 'alt', 'title', 'role', 'aria-label',
-          'data-testid', 'data-test', 'data-cy', 'data-automation',
-          'autocomplete', 'required', 'disabled', 'readonly'
-        ];
-        
-        // 標準属性の取得
-        for (const attr of standardAttrs) {
-          const value = targetElement.getAttribute(attr);
-          if (value !== null) {
-            attrs[attr] = value;
-          }
-        }
-        
-        // カスタムdata-*属性の取得
-        for (const attr of targetElement.getAttributeNames()) {
-          if (attr.startsWith('data-') && !attrs[attr]) {
-            attrs[attr] = targetElement.getAttribute(attr) || '';
-          }
-        }
-        
-        // 要素の基本情報も含める
-        const elementInfo = {
-          tagName: targetElement.tagName.toLowerCase(),
-          textContent: targetElement.textContent?.trim() || '',
-          innerHTML: targetElement.innerHTML.substring(0, 200), // 先頭200文字のみ
-          attributes: attrs
+      console.log('[DEBUG] In try block');
+      // ✅ ref値優先の分岐処理（MDファイル準拠）
+      if (params.ref) {
+        console.log('[DEBUG] Using ref path:', params.ref);
+        // 🆕 aria-ref直接アクセス（高精度）
+        const snapshot = tab.snapshotOrDie();
+        console.log('[DEBUG] Got snapshot');
+        const locator = snapshot.refLocator({
+          ref: params.ref,
+          element: params.element,
+        });
+        console.log('[DEBUG] Got locator');
+
+        const attributes = await locator.evaluate((el: Element, refValue: string) => ({
+          // 必須属性：ロケータ生成用
+          id: el.id || null,
+          className: el.className || null,
+          'data-testid': el.getAttribute('data-testid'),
+          'data-test': el.getAttribute('data-test'),
+          name: (el as any).name || el.getAttribute('name'),
+
+          // セマンティック情報
+          tagName: el.tagName.toLowerCase(),
+          type: (el as any).type || null,
+          placeholder: (el as any).placeholder || null,
+          value: (el as any).value || null,
+          textContent: el.textContent?.trim().slice(0, 100) || null,
+
+          // アクセシビリティ情報
+          role: el.getAttribute('role'),
+          'aria-label': el.getAttribute('aria-label'),
+          'aria-describedby': el.getAttribute('aria-describedby'),
+          // bulkでは isVisible のみ保証、単発は広めに返すが互換のため残す
+
+          // 追加情報
+          href: (el as any).href || null,
+          src: (el as any).src || null,
+          // 可視性（スタイルも返す）
+          isVisible: (() => {
+            const he = el as HTMLElement;
+            const cs = getComputedStyle(he);
+            return !he.hidden && cs.display !== 'none' && cs.visibility !== 'hidden'
+              && he.offsetParent !== null;
+          })(),
+          // 単発は詳細も返すが、クライアントは使わない前提
+          styleDisplay: getComputedStyle(el as HTMLElement).display,
+          styleVisibility: getComputedStyle(el as HTMLElement).visibility,
+
+          // メタデータ
+          extraction_method: 'mcp-aria-ref-direct',
+          extraction_timestamp: Date.now(),
+          ref: refValue
+        }), params.ref, { timeout: 3000 });
+
+        console.log('[DEBUG] Attributes extracted:', Object.keys(attributes).length);
+
+        const payload = { attributes };
+        return {
+          code: [],
+          content: [{ type: 'text', text: JSON.stringify(payload) }],
+          data: payload,
+          captureSnapshot: false,
+          waitForNetwork: false,
         };
-        
-        return elementInfo;
-        
-      }, params.ref);
-      
-      return {
-        code: [
-          `// HTML属性取得: ${params.ref}`,
-          `const elementAttributes = await page.evaluate((refId) => {`,
-          `  // 要素特定と属性取得ロジック`,
-          `  // ... (実装詳細は省略)`,
-          `}, '${params.ref}');`
-        ],
-        result: attributes,
-        captureSnapshot: false,
-        waitForNetwork: false
-      };
-      
+      } else if (params.selector) {
+        // 既存のselector処理（後方互換性保持）
+        const locator = tab.page.locator(params.selector);
+
+        const attributes = await locator.evaluate((el: Element) => ({
+          id: el.id || null,
+          className: el.className || null,
+          'data-testid': el.getAttribute('data-testid'),
+          'data-test': el.getAttribute('data-test'),
+          name: (el as any).name || el.getAttribute('name'),
+          tagName: el.tagName.toLowerCase(),
+          type: (el as any).type || null,
+          placeholder: (el as any).placeholder || null,
+          value: (el as any).value || null,
+          textContent: el.textContent?.trim().slice(0, 100) || null,
+          role: el.getAttribute('role'),
+          'aria-label': el.getAttribute('aria-label'),
+          // 単発のみ詳細
+          href: (el as any).href || null,
+          src: (el as any).src || null,
+          isVisible: (() => {
+            const he = el as HTMLElement;
+            const cs = getComputedStyle(he);
+            return !he.hidden && cs.display !== 'none' && cs.visibility !== 'hidden'
+              && he.offsetParent !== null;
+          })(),
+          styleDisplay: getComputedStyle(el as HTMLElement).display,
+          styleVisibility: getComputedStyle(el as HTMLElement).visibility,
+          extraction_method: 'css-selector-legacy',
+          extraction_timestamp: Date.now()
+        }), { timeout: 3000 });
+
+        const payload = { attributes };
+        return {
+          code: [],
+          content: [{ type: 'text', text: JSON.stringify(payload) }],
+          data: payload,
+          captureSnapshot: false,
+          waitForNetwork: false,
+        };
+      } else {
+        throw new Error('Either ref or selector parameter is required');
+      }
+
     } catch (error: any) {
+      console.error('[ERROR] browser_get_element_attributes failed:', error);
+      console.error('[ERROR] Stack:', error.stack);
       return {
-        code: [`// 属性取得エラー: ${params.ref}`],
-        error: `HTML属性取得失敗: ${error.message}`,
+        code: [],
+        content: [{ type: 'text', text: `Element attributes extraction failed: ${error.message}` }],
         captureSnapshot: false,
         waitForNetwork: false
       };
@@ -125,91 +152,58 @@ const getBulkAttributes = defineTool({
   schema: {
     name: 'browser_get_bulk_attributes',
     title: 'Get HTML attributes of multiple elements',
-    description: 'Extract HTML attributes from multiple elements at once for performance',
+    description: 'Extract HTML attributes from multiple elements at once using ref locators',
     inputSchema: z.object({
-      refs: z.array(z.string()).describe('Array of element reference IDs'),
-      description: z.string().optional().describe('Description of the bulk operation')
+      refs: z.array(z.string()).min(1).describe('Array of element reference IDs'),
     }),
     type: 'readOnly',
   },
 
   handle: async (context, params) => {
     const tab = context.currentTabOrDie();
-    
+
     try {
-      const bulkAttributes = await tab.page.evaluate((refIds) => {
-        const elements = Array.from(document.querySelectorAll('*'));
-        const results: Record<string, any> = {};
-        
-        for (const refId of refIds) {
-          let targetElement = null;
-          
-          // 要素特定ロジック（上記と同様）
-          for (const element of elements) {
-            if (element.getAttribute('data-ref') === refId) {
-              targetElement = element;
-              break;
-            }
-          }
-          
-          // フォールバック
-          if (!targetElement) {
-            const refNum = parseInt(refId.replace(/[^0-9]/g, ''), 10);
-            if (!isNaN(refNum) && refNum >= 0 && refNum < elements.length) {
-              targetElement = elements[refNum];
-            }
-          }
-          
-          if (targetElement) {
-            const attrs: Record<string, string> = {};
-            
-            // 属性取得（上記と同じロジック）
-            const standardAttrs = [
-              'id', 'name', 'type', 'class', 'placeholder', 'value',
-              'href', 'src', 'alt', 'title', 'role', 'aria-label',
-              'data-testid', 'data-test', 'data-cy'
-            ];
-            
-            for (const attr of standardAttrs) {
-              const value = targetElement.getAttribute(attr);
-              if (value !== null) {
-                attrs[attr] = value;
-              }
-            }
-            
-            results[refId] = {
-              tagName: targetElement.tagName.toLowerCase(),
-              textContent: targetElement.textContent?.trim() || '',
-              attributes: attrs
-            };
-          } else {
-            results[refId] = { error: `Element ${refId} not found` };
-          }
+      if (!tab.hasSnapshot()) {
+        await tab.captureSnapshot({});
+      }
+      const snapshot = tab.snapshotOrDie();
+      const results: Record<string, any> = {};
+
+      for (const ref of params.refs) {
+        try {
+          const locator = snapshot.refLocator({ ref, element: `bulk-${ref}` });
+          const attributes = await locator.evaluate((el: Element) => ({
+            // bulkは isVisible のみを返す（混乱回避のため）
+            isVisible: (() => {
+              const he = el as HTMLElement;
+              const cs = getComputedStyle(he);
+              return !he.hidden && cs.display !== 'none' && cs.visibility !== 'hidden'
+                && he.offsetParent !== null;
+            })(),
+          }), { timeout: 3000 });
+          results[ref] = attributes;
+        } catch (error: any) {
+          results[ref] = { error: String(error?.message || error), ref };
         }
-        
-        return results;
-        
-      }, params.refs);
-      
+      }
+
+      const payload = { attributes: results };
       return {
         code: [
-          `// 一括属性取得: ${params.refs.join(', ')}`,
-          `const bulkAttributes = await page.evaluate((refIds) => {`,
-          `  // 複数要素の属性を一括取得`,
-          `  // ... (実装詳細は省略)`,
-          `}, ${JSON.stringify(params.refs)});`
+          `// Bulk attributes extracted for ${params.refs.length} elements`,
+          `console.log('Bulk results:', ${JSON.stringify(results)});`,
         ],
-        result: bulkAttributes,
+        content: [{ type: 'text', text: JSON.stringify(payload) }],
+        data: payload,
         captureSnapshot: false,
-        waitForNetwork: false
+        waitForNetwork: false,
       };
-      
     } catch (error: any) {
       return {
-        code: [`// 一括属性取得エラー`],
-        error: `一括属性取得失敗: ${error.message}`,
+        code: [],
+        content: [{ type: 'text', text: `Bulk attributes extraction failed: ${error.message}` }],
         captureSnapshot: false,
-        waitForNetwork: false
+        waitForNetwork: false,
       };
     }
   },

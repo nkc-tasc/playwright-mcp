@@ -29,7 +29,7 @@ export class PageSnapshot {
     this._page = page;
   }
 
-  static async create(page: playwright.Page): Promise<PageSnapshot> {
+  static async create(page: playwright.Page, _options?: { includeHidden?: boolean; maxInteractiveRefs?: number; timeBudgetMs?: number }): Promise<PageSnapshot> {
     const snapshot = new PageSnapshot(page);
     await snapshot._build();
     return snapshot;

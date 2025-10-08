@@ -16,6 +16,7 @@
 
 import { z } from 'zod';
 import { defineTool } from './tool.js';
+import { buildPayload } from './utils/structuredPayload.js';
 
 // Enhanced session state management for page change detection
 type PageState = {
@@ -105,6 +106,7 @@ function calculateUrlChangeScore(previousUrl: string, currentUrl: string): numbe
   }
 }
 
+
 function calculateNumericalChanges(previous: PageState | null, current: PageState) {
   if (!previous) {
     // First call - everything is considered changed
@@ -121,7 +123,7 @@ function calculateNumericalChanges(previous: PageState | null, current: PageStat
   // URL change with sophisticated scoring
   const urlScore = calculateUrlChangeScore(previous.url, current.url);
   
-  // Title change (binary but could be enhanced with similarity)
+  // Simple title change detection (low weight due to frequent dynamic changes)
   const titleScore = previous.title !== current.title ? 1.0 : 0.0;
   
   // Element count change (relative change with ceiling)
@@ -174,12 +176,13 @@ function determineChangeType(components: any): string {
   return 'none';
 }
 
-// Enhanced default weights for numerical feature-based change detection
+// Conservative weights to minimize false positives  
+// Title changes are common in SPAs (notifications, counters, progress) 
 const DEFAULT_WEIGHTS = {
-  url: 0.4,
-  title: 0.15, 
-  elem: 0.15,
-  domStructure: 0.2,
+  url: 0.4,         // URL変化は確実な指標
+  title: 0.10,      // タイトル変化は低重要度（動的変化多いため）
+  elem: 0.20,       // 要素数変化を重視
+  domStructure: 0.20,  // DOM構造変化を重視
   formElements: 0.05,
   linkElements: 0.05,
 };
@@ -196,9 +199,9 @@ const detectPageChangeSchema = z.object({
   }).optional().describe('Weights for different change types'),
   seed: z.boolean().optional().default(false).describe('Initialize state without detection (returns false)'),
   // Hysteresis/cooldown parameters for false positive suppression
-  risingThreshold: z.number().optional().default(0.25).describe('Rising threshold for hysteresis (transition detection)'),
-  fallingThreshold: z.number().optional().default(0.15).describe('Falling threshold for hysteresis (transition end)'),
-  minTimeBetweenTransitionsMs: z.number().optional().default(1500).describe('Cooldown time between transitions in milliseconds'),
+  risingThreshold: z.number().optional().default(0.20).describe('Rising threshold for hysteresis (transition detection)'),
+  fallingThreshold: z.number().optional().default(0.12).describe('Falling threshold for hysteresis (transition end)'),
+  minTimeBetweenTransitionsMs: z.number().optional().default(1200).describe('Cooldown time between transitions in milliseconds'),
 });
 
 const detectPageChange = defineTool({
@@ -229,31 +232,31 @@ const detectPageChange = defineTool({
       console.log(`[DEBUG] detect_page_change: Seed mode - state updated for ${current.url}`);
       
       // Return non-significant change for seed calls
+      const seedData = {
+        change: {
+          significant_change: false,
+          score: 0.0,
+          change_type: 'seed',
+          components: {},
+          current: {
+            url: current.url,
+            title: current.title,
+            elemCount: current.elemCount,
+          },
+          previous: null,
+          timestamp: new Date().toISOString(),
+        }
+      };
+
       return {
         code: [
           '// Page change detection - seed mode',
           `// State initialized for: ${current.url}`,
         ],
+        content: [{ type: 'text', text: JSON.stringify(seedData) }],
+        data: seedData,
         captureSnapshot: false,
         waitForNetwork: false,
-        resultOverride: {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({
-              significant_change: false,
-              score: 0.0,
-              change_type: 'seed',
-              components: {},
-              current: {
-                url: current.url,
-                title: current.title,
-                elemCount: current.elemCount,
-              },
-              previous: null,
-              timestamp: new Date().toISOString(),
-            }, null, 2),
-          }],
-        },
       };
     }
 
@@ -349,14 +352,10 @@ const detectPageChange = defineTool({
         `// Change detected: ${significant_change} (score: ${score.toFixed(3)})`,
         `// Change type: ${change_type}`,
       ],
+      content: [{ type: 'text', text: JSON.stringify({ change: result }) }],
+      data: { change: result },
       captureSnapshot: false,
       waitForNetwork: false,
-      resultOverride: {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify(result, null, 2),
-        }],
-      },
     };
   },
 });

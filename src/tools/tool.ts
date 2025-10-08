@@ -51,7 +51,10 @@ export type ToolResult = {
   action?: () => Promise<ToolActionResult>;
   captureSnapshot: boolean;
   waitForNetwork: boolean;
-  resultOverride?: ToolActionResult;
+  // content: Human-readable Markdown logs
+  content?: (ImageContent | TextContent)[];
+  // data: Structured data (canonical source)
+  data?: unknown;
 };
 
 export type Tool<Input extends InputType = InputType> = {
