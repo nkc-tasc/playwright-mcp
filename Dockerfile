@@ -77,6 +77,11 @@ COPY --from=builder --chown=${USERNAME}:${USERNAME} /app/lib /app/lib
 # ⚡ Copy startup scripts with execute permissions
 COPY --chown=${USERNAME}:${USERNAME} --chmod=755 start-integrated-mcp.sh ./start-integrated-mcp.sh
 COPY --chown=${USERNAME}:${USERNAME} --chmod=755 cleanup-browser-conflicts.sh ./cleanup-browser-conflicts.sh
+# Ensure Unix LF endings for shell scripts (guard against CRLF on Windows)
+USER root
+RUN sed -i 's/\r$//' ./start-integrated-mcp.sh && \
+    sed -i 's/\r$//' ./cleanup-browser-conflicts.sh
+USER ${USERNAME}
 
 # 🔧 Default entrypoint (can be overridden by docker-compose)
 ENTRYPOINT ["./start-integrated-mcp.sh"]
