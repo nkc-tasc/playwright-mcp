@@ -51,7 +51,10 @@ export type ToolResult = {
   action?: () => Promise<ToolActionResult>;
   captureSnapshot: boolean;
   waitForNetwork: boolean;
-  resultOverride?: ToolActionResult;
+  // content: Human-readable Markdown logs
+  content?: (ImageContent | TextContent)[];
+  // data: Structured data (canonical source)
+  data?: unknown;
 };
 
 export type Tool<Input extends InputType = InputType> = {
@@ -60,8 +63,6 @@ export type Tool<Input extends InputType = InputType> = {
   clearsModalState?: ModalState['type'];
   handle: (context: Context, params: z.output<Input>) => Promise<ToolResult>;
 };
-
-export type ToolFactory = (snapshot: boolean) => Tool<any>;
 
 export function defineTool<Input extends InputType>(tool: Tool<Input>): Tool<Input> {
   return tool;

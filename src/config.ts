@@ -15,7 +15,6 @@
  */
 
 import fs from 'fs';
-import net from 'net';
 import os from 'os';
 import path from 'path';
 import { devices } from 'playwright';
@@ -29,7 +28,7 @@ export type CLIOptions = {
   blockedOrigins?: string[];
   blockServiceWorkers?: boolean;
   browser?: string;
-  caps?: string;
+  caps?: string[];
   cdpEndpoint?: string;
   config?: string;
   device?: string;
@@ -38,8 +37,8 @@ export type CLIOptions = {
   host?: string;
   ignoreHttpsErrors?: boolean;
   isolated?: boolean;
-  imageResponses: boolean;
-  sandbox: boolean;
+  imageResponses?: 'allow' | 'omit';
+  sandbox?: boolean;
   outputDir?: string;
   port?: number;
   proxyBypass?: string;
@@ -49,7 +48,6 @@ export type CLIOptions = {
   userAgent?: string;
   userDataDir?: string;
   viewportSize?: string;
-  vision?: boolean;
 };
 
 const defaultConfig: FullConfig = {
@@ -68,19 +66,21 @@ const defaultConfig: FullConfig = {
     allowedOrigins: undefined,
     blockedOrigins: undefined,
   },
+  server: {},
   outputDir: path.join(os.tmpdir(), 'playwright-mcp-output', sanitizeForFilePath(new Date().toISOString())),
 };
 
 type BrowserUserConfig = NonNullable<Config['browser']>;
 
 export type FullConfig = Config & {
-  browser: BrowserUserConfig & {
-    browserName: NonNullable<BrowserUserConfig['browserName']>;
+  browser: Omit<BrowserUserConfig, 'browserName'> & {
+    browserName: 'chromium' | 'firefox' | 'webkit';
     launchOptions: NonNullable<BrowserUserConfig['launchOptions']>;
     contextOptions: NonNullable<BrowserUserConfig['contextOptions']>;
   },
   network: NonNullable<Config['network']>,
   outputDir: string;
+  server: NonNullable<Config['server']>,
 };
 
 export async function resolveConfig(config: Config): Promise<FullConfig> {
@@ -89,16 +89,20 @@ export async function resolveConfig(config: Config): Promise<FullConfig> {
 
 export async function resolveCLIConfig(cliOptions: CLIOptions): Promise<FullConfig> {
   const configInFile = await loadConfig(cliOptions.config);
-  const cliOverrides = await configFromCLIOptions(cliOptions);
-  const result = mergeConfig(mergeConfig(defaultConfig, configInFile), cliOverrides);
+  const envOverrides = configFromEnv();
+  const cliOverrides = configFromCLIOptions(cliOptions);
+  let result = defaultConfig;
+  result = mergeConfig(result, configInFile);
+  result = mergeConfig(result, envOverrides);
+  result = mergeConfig(result, cliOverrides);
   // Derive artifact output directory from config.outputDir
   if (result.saveTrace)
     result.browser.launchOptions.tracesDir = path.join(result.outputDir, 'traces');
   return result;
 }
 
-export async function configFromCLIOptions(cliOptions: CLIOptions): Promise<Config> {
-  let browserName: 'chromium' | 'firefox' | 'webkit';
+export function configFromCLIOptions(cliOptions: CLIOptions): Config {
+  let browserName: 'chromium' | 'firefox' | 'webkit' | undefined;
   let channel: string | undefined;
   switch (cliOptions.browser) {
     case 'chrome':
@@ -119,9 +123,6 @@ export async function configFromCLIOptions(cliOptions: CLIOptions): Promise<Conf
     case 'webkit':
       browserName = 'webkit';
       break;
-    default:
-      browserName = 'chromium';
-      channel = 'chrome';
   }
 
   // Launch options
@@ -131,13 +132,9 @@ export async function configFromCLIOptions(cliOptions: CLIOptions): Promise<Conf
     headless: cliOptions.headless,
   };
 
-  if (browserName === 'chromium') {
-    (launchOptions as any).cdpPort = await findFreePort();
-    if (!cliOptions.sandbox) {
-      // --no-sandbox was passed, disable the sandbox
-      launchOptions.chromiumSandbox = false;
-    }
-  }
+  // --no-sandbox was passed, disable the sandbox
+  if (!cliOptions.sandbox)
+    launchOptions.chromiumSandbox = false;
 
   if (cliOptions.proxyServer) {
     launchOptions.proxy = {
@@ -146,6 +143,9 @@ export async function configFromCLIOptions(cliOptions: CLIOptions): Promise<Conf
     if (cliOptions.proxyBypass)
       launchOptions.proxy.bypass = cliOptions.proxyBypass;
   }
+
+  if (cliOptions.device && cliOptions.cdpEndpoint)
+    throw new Error('Device emulation is not supported with cdpEndpoint.');
 
   // Context options
   const contextOptions: BrowserContextOptions = cliOptions.device ? devices[cliOptions.device] : {};
@@ -185,33 +185,47 @@ export async function configFromCLIOptions(cliOptions: CLIOptions): Promise<Conf
       port: cliOptions.port,
       host: cliOptions.host,
     },
-    capabilities: cliOptions.caps?.split(',').map((c: string) => c.trim() as ToolCapability),
-    vision: !!cliOptions.vision,
+    capabilities: cliOptions.caps as ToolCapability[],
     network: {
       allowedOrigins: cliOptions.allowedOrigins,
       blockedOrigins: cliOptions.blockedOrigins,
     },
     saveTrace: cliOptions.saveTrace,
     outputDir: cliOptions.outputDir,
+    imageResponses: cliOptions.imageResponses,
   };
-
-  if (!cliOptions.imageResponses) {
-    // --no-image-responses was passed, disable image responses
-    result.noImageResponses = true;
-  }
 
   return result;
 }
 
-async function findFreePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.listen(0, () => {
-      const { port } = server.address() as net.AddressInfo;
-      server.close(() => resolve(port));
-    });
-    server.on('error', reject);
-  });
+function configFromEnv(): Config {
+  const options: CLIOptions = {};
+  options.allowedOrigins = semicolonSeparatedList(process.env.PLAYWRIGHT_MCP_ALLOWED_ORIGINS);
+  options.blockedOrigins = semicolonSeparatedList(process.env.PLAYWRIGHT_MCP_BLOCKED_ORIGINS);
+  options.blockServiceWorkers = envToBoolean(process.env.PLAYWRIGHT_MCP_BLOCK_SERVICE_WORKERS);
+  options.browser = envToString(process.env.PLAYWRIGHT_MCP_BROWSER);
+  options.caps = commaSeparatedList(process.env.PLAYWRIGHT_MCP_CAPS);
+  options.cdpEndpoint = envToString(process.env.PLAYWRIGHT_MCP_CDP_ENDPOINT);
+  options.config = envToString(process.env.PLAYWRIGHT_MCP_CONFIG);
+  options.device = envToString(process.env.PLAYWRIGHT_MCP_DEVICE);
+  options.executablePath = envToString(process.env.PLAYWRIGHT_MCP_EXECUTABLE_PATH);
+  options.headless = envToBoolean(process.env.PLAYWRIGHT_MCP_HEADLESS);
+  options.host = envToString(process.env.PLAYWRIGHT_MCP_HOST);
+  options.ignoreHttpsErrors = envToBoolean(process.env.PLAYWRIGHT_MCP_IGNORE_HTTPS_ERRORS);
+  options.isolated = envToBoolean(process.env.PLAYWRIGHT_MCP_ISOLATED);
+  if (process.env.PLAYWRIGHT_MCP_IMAGE_RESPONSES === 'omit')
+    options.imageResponses = 'omit';
+  options.sandbox = envToBoolean(process.env.PLAYWRIGHT_MCP_SANDBOX);
+  options.outputDir = envToString(process.env.PLAYWRIGHT_MCP_OUTPUT_DIR);
+  options.port = envToNumber(process.env.PLAYWRIGHT_MCP_PORT);
+  options.proxyBypass = envToString(process.env.PLAYWRIGHT_MCP_PROXY_BYPASS);
+  options.proxyServer = envToString(process.env.PLAYWRIGHT_MCP_PROXY_SERVER);
+  options.saveTrace = envToBoolean(process.env.PLAYWRIGHT_MCP_SAVE_TRACE);
+  options.storageState = envToString(process.env.PLAYWRIGHT_MCP_STORAGE_STATE);
+  options.userAgent = envToString(process.env.PLAYWRIGHT_MCP_USER_AGENT);
+  options.userDataDir = envToString(process.env.PLAYWRIGHT_MCP_USER_DATA_DIR);
+  options.viewportSize = envToString(process.env.PLAYWRIGHT_MCP_VIEWPORT_SIZE);
+  return configFromCLIOptions(options);
 }
 
 async function loadConfig(configFile: string | undefined): Promise<Config> {
@@ -239,6 +253,8 @@ function pickDefined<T extends object>(obj: T | undefined): Partial<T> {
 
 function mergeConfig(base: FullConfig, overrides: Config): FullConfig {
   const browser: FullConfig['browser'] = {
+    ...pickDefined(base.browser),
+    ...pickDefined(overrides.browser),
     browserName: overrides.browser?.browserName ?? base.browser?.browserName ?? 'chromium',
     isolated: overrides.browser?.isolated ?? base.browser?.isolated ?? false,
     launchOptions: {
@@ -250,9 +266,6 @@ function mergeConfig(base: FullConfig, overrides: Config): FullConfig {
       ...pickDefined(base.browser?.contextOptions),
       ...pickDefined(overrides.browser?.contextOptions),
     },
-    userDataDir: overrides.browser?.userDataDir ?? base.browser?.userDataDir,
-    cdpEndpoint: overrides.browser?.cdpEndpoint ?? base.browser?.cdpEndpoint,
-    remoteEndpoint: overrides.browser?.remoteEndpoint ?? base.browser?.remoteEndpoint,
   };
 
   if (browser.browserName !== 'chromium' && browser.launchOptions)
@@ -265,6 +278,40 @@ function mergeConfig(base: FullConfig, overrides: Config): FullConfig {
     network: {
       ...pickDefined(base.network),
       ...pickDefined(overrides.network),
-    }
+    },
+    server: {
+      ...pickDefined(base.server),
+      ...pickDefined(overrides.server),
+    },
   } as FullConfig;
+}
+
+export function semicolonSeparatedList(value: string | undefined): string[] | undefined {
+  if (!value)
+    return undefined;
+  return value.split(';').map(v => v.trim());
+}
+
+export function commaSeparatedList(value: string | undefined): string[] | undefined {
+  if (!value)
+    return undefined;
+  return value.split(',').map(v => v.trim());
+}
+
+function envToNumber(value: string | undefined): number | undefined {
+  if (!value)
+    return undefined;
+  return +value;
+}
+
+function envToBoolean(value: string | undefined): boolean | undefined {
+  if (value === 'true' || value === '1')
+    return true;
+  if (value === 'false' || value === '0')
+    return false;
+  return undefined;
+}
+
+function envToString(value: string | undefined): string | undefined {
+  return value ? value.trim() : undefined;
 }

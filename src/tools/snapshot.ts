@@ -20,30 +20,101 @@ import { defineTool } from './tool.js';
 import * as javascript from '../javascript.js';
 import { generateLocator } from './utils.js';
 
+// Phase 1.5: Explicit snapshot result type definition for client reliability
+export interface SnapshotResult {
+  url: string;
+  title: string;
+  html?: string;
+  accessibility_tree?: string;
+  content?: Array<{ type: string; text: string }>;
+}
+
 const snapshot = defineTool({
   capability: 'core',
   schema: {
     name: 'browser_snapshot',
     title: 'Page snapshot',
     description: 'Capture accessibility snapshot of the current page, this is better than screenshot',
-    inputSchema: z.object({}),
+  inputSchema: z.object({
+      includeHidden: z.boolean().default(false),
+      maxInteractiveRefs: z.number().min(50).max(300).default(120),
+      timeBudgetMs: z.number().min(500).max(3000).default(1500)
+    }),
     type: 'readOnly',
   },
 
-  handle: async context => {
+  handle: async (context, params) => {
+    // Ensure page exists
     await context.ensureTab();
 
+    // Capture a fresh snapshot for internal state/locators
+    const tab = context.currentTabOrDie();
+    await tab.captureSnapshot({
+      includeHidden: params.includeHidden,
+      maxInteractiveRefs: params.maxInteractiveRefs,
+      timeBudgetMs: params.timeBudgetMs,
+    });
+
+    // Get the accessibility tree with ref information
+    const snapshot = tab.hasSnapshot() ? tab.snapshotOrDie() : null;
+    console.log('[DEBUG] snapshot exists:', !!snapshot);
+    console.log('[DEBUG] snapshot hasSnapshot():', tab.hasSnapshot());
+
+    const accessibility_tree = snapshot ? snapshot.text() : '';
+    console.log('[DEBUG] accessibility_tree length:', accessibility_tree.length);
+    console.log('[DEBUG] accessibility_tree preview:', accessibility_tree.substring(0, 200));
+
+    // Collect minimal, structured page state for clients to parse easily
+    const payload = await tab.page.evaluate(() => ({
+      html: document.documentElement?.outerHTML || '',
+      url: location.href,
+      title: document.title || ''
+    }));
+
+    // Enhanced payload with accessibility tree
+    const enhancedPayload = {
+      ...payload,
+      accessibility_tree: accessibility_tree
+    };
+
     return {
-      code: [`// <internal code to capture accessibility snapshot>`],
-      captureSnapshot: true,
+      code: [
+        `// Enhanced page snapshot collected (html: ${String(payload.html?.length || 0)}, accessibility: ${String(accessibility_tree?.length || 0)})`,
+      ],
+      content: [{ type: 'text', text: JSON.stringify(enhancedPayload) }],
+      data: enhancedPayload,
+      // We capture snapshot for accessibility tree
+      captureSnapshot: false,
       waitForNetwork: false,
     };
   },
 });
 
-const elementSchema = z.object({
+export const baseElementSchema = z.object({
   element: z.string().describe('Human-readable element description used to obtain permission to interact with the element'),
-  ref: z.string().describe('Exact target element reference from the page snapshot'),
+  ref: z.string().optional().describe('Exact target element reference from the page snapshot'),
+  selector: z.string().optional().describe('CSS selector to target the element'),
+});
+
+export const elementSchema = baseElementSchema.refine(data => {
+  // 🔧 P0緊急修正: undefinedや空文字列を適切に処理
+  const hasRef = data.ref && typeof data.ref === 'string' && data.ref.trim().length > 0;
+  const hasSelector = data.selector && typeof data.selector === 'string' && data.selector.trim().length > 0;
+  return hasRef || hasSelector;
+}, {
+  message: "Either 'ref' or 'selector' must be provided as non-empty string",
+});
+
+const clickSchema = baseElementSchema.extend({
+  doubleClick: z.boolean().optional().describe('Whether to perform a double click instead of a single click'),
+  button: z.enum(['left', 'right', 'middle']).optional().describe('Button to click, defaults to left'),
+}).refine(data => {
+  // 🔧 同じvalidation
+  const hasRef = data.ref && typeof data.ref === 'string' && data.ref.trim().length > 0;
+  const hasSelector = data.selector && typeof data.selector === 'string' && data.selector.trim().length > 0;
+  return hasRef || hasSelector;
+}, {
+  message: "Either 'ref' or 'selector' must be provided as non-empty string",
 });
 
 const click = defineTool({
@@ -52,22 +123,35 @@ const click = defineTool({
     name: 'browser_click',
     title: 'Click',
     description: 'Perform click on a web page',
-    inputSchema: elementSchema,
+    inputSchema: clickSchema,
     type: 'destructive',
   },
 
   handle: async (context, params) => {
     const tab = context.currentTabOrDie();
-    const locator = tab.snapshotOrDie().refLocator(params.ref);
 
-    const code = [
-      `// Click ${params.element}`,
-      `await page.${await generateLocator(locator)}.click();`
-    ];
+    // Support both ref-based and selector-based element targeting
+    const locator = params.selector
+      ? tab.page.locator(params.selector)
+      : params.ref
+        ? tab.snapshotOrDie().refLocator({ ref: params.ref, element: params.element })
+        : tab.page.locator(`[data-ref="${params.element}"]`); // fallback
+
+    const button = params.button;
+    const buttonAttr = button ? `{ button: '${button}' }` : '';
+
+    const code: string[] = [];
+    if (params.doubleClick) {
+      code.push(`// Double click ${params.element}`);
+      code.push(`await page.${await generateLocator(locator)}.dblclick(${buttonAttr});`);
+    } else {
+      code.push(`// Click ${params.element}`);
+      code.push(`await page.${await generateLocator(locator)}.click(${buttonAttr});`);
+    }
 
     return {
       code,
-      action: () => locator.click(),
+      action: () => params.doubleClick ? locator.dblclick({ button }) : locator.click({ button }),
       captureSnapshot: true,
       waitForNetwork: true,
     };
@@ -91,8 +175,8 @@ const drag = defineTool({
 
   handle: async (context, params) => {
     const snapshot = context.currentTabOrDie().snapshotOrDie();
-    const startLocator = snapshot.refLocator(params.startRef);
-    const endLocator = snapshot.refLocator(params.endRef);
+    const startLocator = snapshot.refLocator({ ref: params.startRef, element: params.startElement });
+    const endLocator = snapshot.refLocator({ ref: params.endRef, element: params.endElement });
 
     const code = [
       `// Drag ${params.startElement} to ${params.endElement}`,
@@ -119,8 +203,14 @@ const hover = defineTool({
   },
 
   handle: async (context, params) => {
-    const snapshot = context.currentTabOrDie().snapshotOrDie();
-    const locator = snapshot.refLocator(params.ref);
+    const tab = context.currentTabOrDie();
+
+    // Support both ref-based and selector-based element targeting
+    const locator = params.selector
+      ? tab.page.locator(params.selector)
+      : params.ref
+        ? tab.snapshotOrDie().refLocator({ ref: params.ref, element: params.element })
+        : tab.page.locator(`[data-ref="${params.element}"]`); // fallback
 
     const code = [
       `// Hover over ${params.element}`,
@@ -136,55 +226,7 @@ const hover = defineTool({
   },
 });
 
-const typeSchema = elementSchema.extend({
-  text: z.string().describe('Text to type into the element'),
-  submit: z.boolean().optional().describe('Whether to submit entered text (press Enter after)'),
-  slowly: z.boolean().optional().describe('Whether to type one character at a time. Useful for triggering key handlers in the page. By default entire text is filled in at once.'),
-});
-
-const type = defineTool({
-  capability: 'core',
-  schema: {
-    name: 'browser_type',
-    title: 'Type text',
-    description: 'Type text into editable element',
-    inputSchema: typeSchema,
-    type: 'destructive',
-  },
-
-  handle: async (context, params) => {
-    const snapshot = context.currentTabOrDie().snapshotOrDie();
-    const locator = snapshot.refLocator(params.ref);
-
-    const code: string[] = [];
-    const steps: (() => Promise<void>)[] = [];
-
-    if (params.slowly) {
-      code.push(`// Press "${params.text}" sequentially into "${params.element}"`);
-      code.push(`await page.${await generateLocator(locator)}.pressSequentially(${javascript.quote(params.text)});`);
-      steps.push(() => locator.pressSequentially(params.text));
-    } else {
-      code.push(`// Fill "${params.text}" into "${params.element}"`);
-      code.push(`await page.${await generateLocator(locator)}.fill(${javascript.quote(params.text)});`);
-      steps.push(() => locator.fill(params.text));
-    }
-
-    if (params.submit) {
-      code.push(`// Submit text`);
-      code.push(`await page.${await generateLocator(locator)}.press('Enter');`);
-      steps.push(() => locator.press('Enter'));
-    }
-
-    return {
-      code,
-      action: () => steps.reduce((acc, step) => acc.then(step), Promise.resolve()),
-      captureSnapshot: true,
-      waitForNetwork: true,
-    };
-  },
-});
-
-const selectOptionSchema = elementSchema.extend({
+const selectOptionSchema = baseElementSchema.extend({
   values: z.array(z.string()).describe('Array of values to select in the dropdown. This can be a single value or multiple values.'),
 });
 
@@ -199,8 +241,14 @@ const selectOption = defineTool({
   },
 
   handle: async (context, params) => {
-    const snapshot = context.currentTabOrDie().snapshotOrDie();
-    const locator = snapshot.refLocator(params.ref);
+    const tab = context.currentTabOrDie();
+
+    // Support both ref-based and selector-based element targeting
+    const locator = params.selector
+      ? tab.page.locator(params.selector)
+      : params.ref
+        ? tab.snapshotOrDie().refLocator({ ref: params.ref, element: params.element })
+        : tab.page.locator(`[data-ref="${params.element}"]`); // fallback
 
     const code = [
       `// Select options [${params.values.join(', ')}] in ${params.element}`,
@@ -216,88 +264,92 @@ const selectOption = defineTool({
   },
 });
 
-/**
- * Fill ツール：Playwright の page.fill() を使って入力フィールドに文字列を一括入力
- */
-const browserFillSchema = elementSchema.extend({
-  value: z.string().describe('入力する文字列'),
+// Fill tool for text input
+const fillSchema = baseElementSchema.extend({
+  text: z.string().describe('Text to fill into the element'),
 });
 
-const browserFill = defineTool({
+const fill = defineTool({
   capability: 'core',
   schema: {
     name: 'browser_fill',
-    title: 'Fill',
-    description: '指定した要素に文字列を一括で入力します',
-    inputSchema: browserFillSchema,
+    title: 'Fill text',
+    description: 'Fill text into an input field',
+    inputSchema: fillSchema,
     type: 'destructive',
   },
+
   handle: async (context, params) => {
-    const snapshot = context.currentTabOrDie().snapshotOrDie();
-    const locator = snapshot.refLocator(params.ref);
+    const tab = context.currentTabOrDie();
+
+    // Support both ref-based and selector-based element targeting
+    const locator = params.selector
+      ? tab.page.locator(params.selector)
+      : params.ref
+        ? tab.snapshotOrDie().refLocator({ ref: params.ref, element: params.element })
+        : tab.page.locator(`[data-ref="${params.element}"]`); // fallback
+
     const code = [
-      `// Fill "${params.value}" into ${params.element}`,
-      `await page.${await generateLocator(locator)}.fill(${javascript.formatObject(params.value)});`
+      `// Fill "${params.text}" into ${params.element}`,
+      `await page.${await generateLocator(locator)}.fill(${javascript.quote(params.text)});`
     ];
+
     return {
       code,
-      action: () => locator.fill(params.value).then(() => {}),
+      action: () => locator.fill(params.text),
       captureSnapshot: true,
       waitForNetwork: true,
     };
   },
 });
 
-/**
- * Check ツール：Playwright の page.check() を使ってチェックボックス／ラジオを確実にチェック
- */
-const browserCheckSchema = elementSchema;
+// Check/uncheck tool for checkboxes
+const checkSchema = baseElementSchema.extend({
+  checked: z.boolean().describe('Whether to check (true) or uncheck (false) the checkbox'),
+});
 
-const browserCheck = defineTool({
+const check = defineTool({
   capability: 'core',
   schema: {
     name: 'browser_check',
-    title: 'Check',
-    description: '指定したチェックボックスまたはラジオボタンをチェックします',
-    inputSchema: browserCheckSchema,
+    title: 'Check/uncheck',
+    description: 'Check or uncheck a checkbox',
+    inputSchema: checkSchema,
     type: 'destructive',
   },
+
   handle: async (context, params) => {
-    const snapshot = context.currentTabOrDie().snapshotOrDie();
-    const locator = snapshot.refLocator(params.ref);
+    const tab = context.currentTabOrDie();
+
+    // Support both ref-based and selector-based element targeting
+    const locator = params.selector
+      ? tab.page.locator(params.selector)
+      : params.ref
+        ? tab.snapshotOrDie().refLocator({ ref: params.ref, element: params.element })
+        : tab.page.locator(`[data-ref="${params.element}"]`); // fallback
+
+    const action = params.checked ? 'check' : 'uncheck';
     const code = [
-      `// Check ${params.element}`,
-      `await page.${await generateLocator(locator)}.check();`
+      `// ${action} ${params.element}`,
+      `await page.${await generateLocator(locator)}.${action}();`
     ];
+
     return {
       code,
-      action: () => locator.check().then(() => {}),
+      action: () => params.checked ? locator.check() : locator.uncheck(),
       captureSnapshot: true,
       waitForNetwork: true,
     };
   },
 });
 
-// browser_type は browserFill の後方互換 alias
-/** @deprecated Remove in July 2025 - use browser_fill instead */
-const browserType = {
-  ...browserFill,
-  schema: {
-    ...browserFill.schema,
-    name: 'browser_type',
-    title: 'Type text (deprecated - use browser_fill)',
-    description: 'DEPRECATED: Use browser_fill instead. Type text into element',
-  }
-};
 
 export default [
   snapshot,
   click,
   drag,
   hover,
-  type,
   selectOption,
-  browserFill,
-  browserCheck,
-  browserType, // 🔄 後方互換 alias
+  fill,
+  check,
 ];

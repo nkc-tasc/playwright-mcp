@@ -16,7 +16,7 @@
 
 import type * as playwright from 'playwright';
 
-export type ToolCapability = 'core' | 'tabs' | 'pdf' | 'history' | 'wait' | 'files' | 'install' | 'testing';
+export type ToolCapability = 'core' | 'core-tabs' | 'core-install' | 'vision' | 'pdf';
 
 export type Config = {
   /**
@@ -80,19 +80,10 @@ export type Config = {
   /**
    * List of enabled tool capabilities. Possible values:
    *   - 'core': Core browser automation features.
-   *   - 'tabs': Tab management features.
    *   - 'pdf': PDF generation and manipulation.
-   *   - 'history': Browser history access.
-   *   - 'wait': Wait and timing utilities.
-   *   - 'files': File upload/download support.
-   *   - 'install': Browser installation utilities.
+   *   - 'vision': Coordinate-based interactions.
    */
   capabilities?: ToolCapability[];
-
-  /**
-   * Run server that uses screenshots (Aria snapshots are used by default).
-   */
-  vision?: boolean;
 
   /**
    * Whether to save the Playwright trace of the session into the output directory.
@@ -117,7 +108,7 @@ export type Config = {
   };
 
   /**
-   * Do not send image responses to the client.
+   * Whether to send image responses to the client. Can be "allow", "omit", or "auto". Defaults to "auto", which sends images if the client can display them.
    */
-  noImageResponses?: boolean;
+  imageResponses?: 'allow' | 'omit';
 };

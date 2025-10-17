@@ -17,14 +17,16 @@
 import * as playwright from 'playwright';
 
 import { PageSnapshot } from './pageSnapshot.js';
+import { callOnPageNoTrace } from './tools/utils.js';
+import { logUnhandledError } from './log.js';
 
 import type { Context } from './context.js';
-import { callOnPageNoTrace } from './tools/utils.js';
 
 export class Tab {
   readonly context: Context;
   readonly page: playwright.Page;
-  private _consoleMessages: playwright.ConsoleMessage[] = [];
+  private _consoleMessages: ConsoleMessage[] = [];
+  private _recentConsoleMessages: ConsoleMessage[] = [];
   private _requests: Map<playwright.Request, playwright.Response | null> = new Map();
   private _snapshot: PageSnapshot | undefined;
   private _onPageClose: (tab: Tab) => void;
@@ -33,7 +35,8 @@ export class Tab {
     this.context = context;
     this.page = page;
     this._onPageClose = onPageClose;
-    page.on('console', event => this._consoleMessages.push(event));
+    page.on('console', event => this._handleConsoleMessage(messageToConsoleMessage(event)));
+    page.on('pageerror', error => this._handleConsoleMessage(pageErrorToConsoleMessage(error)));
     page.on('request', request => this._requests.set(request, null));
     page.on('response', response => this._requests.set(response.request(), response));
     page.on('close', () => this._onClose());
@@ -54,7 +57,13 @@ export class Tab {
 
   private _clearCollectedArtifacts() {
     this._consoleMessages.length = 0;
+    this._recentConsoleMessages.length = 0;
     this._requests.clear();
+  }
+
+  private _handleConsoleMessage(message: ConsoleMessage) {
+    this._consoleMessages.push(message);
+    this._recentConsoleMessages.push(message);
   }
 
   private _onClose() {
@@ -67,13 +76,13 @@ export class Tab {
   }
 
   async waitForLoadState(state: 'load', options?: { timeout?: number }): Promise<void> {
-    await callOnPageNoTrace(this.page, page => page.waitForLoadState(state, options).catch(() => {}));
+    await callOnPageNoTrace(this.page, page => page.waitForLoadState(state, options).catch(logUnhandledError));
   }
 
   async navigate(url: string) {
     this._clearCollectedArtifacts();
 
-    const downloadEvent = callOnPageNoTrace(this.page, page => page.waitForEvent('download').catch(() => {}));
+    const downloadEvent = callOnPageNoTrace(this.page, page => page.waitForEvent('download').catch(logUnhandledError));
     try {
       await this.page.goto(url, { waitUntil: 'domcontentloaded' });
     } catch (_e: unknown) {
@@ -83,11 +92,10 @@ export class Tab {
         || e.message.includes('Download is starting'); // firefox + webkit
       if (!mightBeDownload)
         throw e;
-
       // on chromium, the download event is fired *after* page.goto rejects, so we wait a lil bit
       const download = await Promise.race([
         downloadEvent,
-        new Promise(resolve => setTimeout(resolve, 500)),
+        new Promise(resolve => setTimeout(resolve, 1000)),
       ]);
       if (!download)
         throw e;
@@ -107,7 +115,7 @@ export class Tab {
     return this._snapshot;
   }
 
-  consoleMessages(): playwright.ConsoleMessage[] {
+  consoleMessages(): ConsoleMessage[] {
     return this._consoleMessages;
   }
 
@@ -115,7 +123,42 @@ export class Tab {
     return this._requests;
   }
 
-  async captureSnapshot() {
-    this._snapshot = await PageSnapshot.create(this.page);
+  async captureSnapshot(options?: { includeHidden?: boolean; maxInteractiveRefs?: number; timeBudgetMs?: number }) {
+    this._snapshot = await PageSnapshot.create(this.page, options);
   }
+
+  takeRecentConsoleMessages(): ConsoleMessage[] {
+    const result = this._recentConsoleMessages.slice();
+    this._recentConsoleMessages.length = 0;
+    return result;
+  }
+}
+
+export type ConsoleMessage = {
+  type: ReturnType<playwright.ConsoleMessage['type']> | undefined;
+  text: string;
+  toString(): string;
+};
+
+function messageToConsoleMessage(message: playwright.ConsoleMessage): ConsoleMessage {
+  return {
+    type: message.type(),
+    text: message.text(),
+    toString: () => `[${message.type().toUpperCase()}] ${message.text()} @ ${message.location().url}:${message.location().lineNumber}`,
+  };
+}
+
+function pageErrorToConsoleMessage(errorOrValue: Error | any): ConsoleMessage {
+  if (errorOrValue instanceof Error) {
+    return {
+      type: undefined,
+      text: errorOrValue.message,
+      toString: () => errorOrValue.stack || errorOrValue.message,
+    };
+  }
+  return {
+    type: undefined,
+    text: String(errorOrValue),
+    toString: () => String(errorOrValue),
+  };
 }

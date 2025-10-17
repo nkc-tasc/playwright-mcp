@@ -19,9 +19,10 @@ import path from 'path';
 
 import { test, expect } from './fixtures.js';
 
-test('check that trace is saved', async ({ startClient, server, localOutputPath }) => {
-  const outputDir = localOutputPath('output');
-  const client = await startClient({
+test('check that trace is saved', async ({ startClient, server, mcpMode }, testInfo) => {
+  const outputDir = testInfo.outputPath('output');
+
+  const { client } = await startClient({
     args: ['--save-trace', `--output-dir=${outputDir}`],
   });
 

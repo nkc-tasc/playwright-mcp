@@ -26,6 +26,8 @@ import { TestServer } from './testserver/index.ts';
 
 import type { Config } from '../config';
 import type { BrowserContext } from 'playwright';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import type { Stream } from 'stream';
 
 export type TestOptions = {
   mcpBrowser: string | undefined;
@@ -39,14 +41,12 @@ type CDPServer = {
 
 type TestFixtures = {
   client: Client;
-  visionClient: Client;
-  startClient: (options?: { clientName?: string, args?: string[], config?: Config }) => Promise<Client>;
+  startClient: (options?: { clientName?: string, args?: string[], config?: Config }) => Promise<{ client: Client, stderr: () => string }>;
   wsEndpoint: string;
   cdpServer: CDPServer;
   server: TestServer;
   httpsServer: TestServer;
   mcpHeadless: boolean;
-  localOutputPath: (filePath: string) => string;
 };
 
 type WorkerFixtures = {
@@ -56,20 +56,19 @@ type WorkerFixtures = {
 export const test = baseTest.extend<TestFixtures & TestOptions, WorkerFixtures>({
 
   client: async ({ startClient }, use) => {
-    await use(await startClient());
-  },
-
-  visionClient: async ({ startClient }, use) => {
-    await use(await startClient({ args: ['--vision'] }));
+    const { client } = await startClient();
+    await use(client);
   },
 
   startClient: async ({ mcpHeadless, mcpBrowser, mcpMode }, use, testInfo) => {
-    const userDataDir = testInfo.outputPath('user-data-dir');
+    const userDataDir = mcpMode !== 'docker' ? testInfo.outputPath('user-data-dir') : undefined;
     const configDir = path.dirname(test.info().config.configFile!);
     let client: Client | undefined;
 
     await use(async options => {
-      const args = ['--user-data-dir', path.relative(configDir, userDataDir)];
+      const args: string[] = [];
+      if (userDataDir)
+        args.push('--user-data-dir', userDataDir);
       if (process.env.CI && process.platform === 'linux')
         args.push('--no-sandbox');
       if (mcpHeadless)
@@ -85,10 +84,16 @@ export const test = baseTest.extend<TestFixtures & TestOptions, WorkerFixtures>(
       }
 
       client = new Client({ name: options?.clientName ?? 'test', version: '1.0.0' });
-      const transport = createTransport(args, mcpMode);
+      const { transport, stderr } = await createTransport(args, mcpMode);
+      let stderrBuffer = '';
+      stderr?.on('data', data => {
+        if (process.env.PWMCP_DEBUG)
+          process.stderr.write(data);
+        stderrBuffer += data.toString();
+      });
       await client.connect(transport);
       await client.ping();
-      return client;
+      return { client, stderr: () => stderrBuffer };
     });
 
     await client?.close();
@@ -129,14 +134,7 @@ export const test = baseTest.extend<TestFixtures & TestOptions, WorkerFixtures>(
 
   mcpMode: [undefined, { option: true }],
 
-  localOutputPath: async ({ mcpMode }, use, testInfo) => {
-    await use(filePath => {
-      test.skip(mcpMode === 'docker', 'Mounting files is not supported in docker mode');
-      return testInfo.outputPath(filePath);
-    });
-  },
-
-  _workerServers: [async ({}, use, workerInfo) => {
+  _workerServers: [async ({ }, use, workerInfo) => {
     const port = 8907 + workerInfo.workerIndex * 4;
     const server = await TestServer.create(port);
 
@@ -162,22 +160,40 @@ export const test = baseTest.extend<TestFixtures & TestOptions, WorkerFixtures>(
   },
 });
 
-function createTransport(args: string[], mcpMode: TestOptions['mcpMode']) {
+async function createTransport(args: string[], mcpMode: TestOptions['mcpMode']): Promise<{
+  transport: Transport,
+  stderr: Stream | null,
+}> {
   // NOTE: Can be removed when we drop Node.js 18 support and changed to import.meta.filename.
   const __filename = url.fileURLToPath(import.meta.url);
   if (mcpMode === 'docker') {
     const dockerArgs = ['run', '--rm', '-i', '--network=host', '-v', `${test.info().project.outputDir}:/app/test-results`];
-    return new StdioClientTransport({
+    const transport = new StdioClientTransport({
       command: 'docker',
       args: [...dockerArgs, 'playwright-mcp-dev:latest', ...args],
     });
+    return {
+      transport,
+      stderr: transport.stderr,
+    };
   }
-  return new StdioClientTransport({
+
+  const transport = new StdioClientTransport({
     command: 'node',
     args: [path.join(path.dirname(__filename), '../cli.js'), ...args],
     cwd: path.join(path.dirname(__filename), '..'),
-    env: process.env as Record<string, string>,
+    stderr: 'pipe',
+    env: {
+      ...process.env,
+      DEBUG: 'pw:mcp:test',
+      DEBUG_COLORS: '0',
+      DEBUG_HIDE_DATE: '1',
+    },
   });
+  return {
+    transport,
+    stderr: transport.stderr!,
+  };
 }
 
 type Response = Awaited<ReturnType<Client['callTool']>>;
@@ -210,17 +226,14 @@ export const expect = baseExpect.extend({
     };
   },
 
-  toContainTextContent(response: Response, content: string | string[]) {
+  toContainTextContent(response: Response, content: string) {
     const isNot = this.isNot;
     try {
-      content = Array.isArray(content) ? content : [content];
-      const texts = (response.content as any).map(c => c.text);
-      for (let i = 0; i < texts.length; i++) {
-        if (isNot)
-          expect(texts[i]).not.toContain(content[i]);
-        else
-          expect(texts[i]).toContain(content[i]);
-      }
+      const texts = (response.content as any).map(c => c.text).join('\n');
+      if (isNot)
+        expect(texts).not.toContain(content);
+      else
+        expect(texts).toContain(content);
     } catch (e) {
       return {
         pass: isNot,
@@ -233,3 +246,7 @@ export const expect = baseExpect.extend({
     };
   },
 });
+
+export function formatOutput(output: string): string[] {
+  return output.split('\n').map(line => line.replace(/^pw:mcp:test /, '').replace(/user data dir.*/, 'user data dir').trim()).filter(Boolean);
+}
